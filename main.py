@@ -30,7 +30,7 @@ html_page = """
     <h1>Find your Favourite Deals</h1>
 
     <form method="post" action="/swarm">
-        <input type="text" name="msg" style="width:300px;" placeholder="Ask something..."/>
+        <input type="text" name="msg" style="width:300px;" placeholder="Find best deals on Iphone, monitor, ssd..."/>
         <button type="submit">Send</button>
     </form>
 
@@ -103,7 +103,7 @@ async def swarm(request: Request):
         )
         agent = Agent(model=model,
                       tools=[swarm, tavily_search, tavily_extract, tavily_crawl],
-                      system_prompt="You are a deal finding assistant, create a swarm of agents which can use the tavily tools imported above to find best deals for the user based on their query"
+                      system_prompt="You are a deal finding assistant, find best deals for the user based on their query"
                       )
         # Real-time web search
         result = agent.tool.tavily_search(
