@@ -20,7 +20,7 @@ class SimpleGuardrails:
         
         # Blocked patterns (customize as needed)
         self.blocked_patterns = [
-            r"ignore (previous|all|your) instruction",
+            r"ignore\s+.*instructions?",  # Match "ignore [anything] instructions"
             r"you are now",
             r"roleplay as",
             r"pretend (you are|to be)",
