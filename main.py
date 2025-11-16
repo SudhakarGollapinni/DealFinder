@@ -11,8 +11,13 @@ from strands_tools.tavily import (
 )
 from strands.models.openai import OpenAIModel
 from pydantic import BaseModel
+from guardrails import SimpleGuardrails, RateLimiter
 
 app = FastAPI()
+
+# Initialize guardrails
+guardrails = SimpleGuardrails()
+rate_limiter = RateLimiter(max_requests=20, window_seconds=60)  # 20 requests per minute
 
 html_page = """
 <!DOCTYPE html>
@@ -44,32 +49,64 @@ def ui_home():
 @app.post("/swarm", response_class=HTMLResponse)
 async def swarm(request: Request):
     form = await request.form()
-    input = form["msg"]
-    print(input)
-    model = OpenAIModel(
-        client_args={
-            "api_key": os.getenv("OPENAI_API_KEY"),
-        },
-        model_id="gpt-4o-mini",  # Specify the model name here
-        params={
-            "max_tokens": 1000,
-            "temperature": 0.7
-        }
-    )
-    agent = Agent(model=model,
-                  tools=[swarm, tavily_search, tavily_extract, tavily_crawl],
-                  system_prompt="You are a deal finding assistant, create a swarm of agents which can use the tavily tools imported above to find best deals for the user based on their query"
-                  )
-    # Real-time web search
-    result = agent.tool.tavily_search(
-        query=input,
-        search_depth="advanced",
-        topic="general",
-        max_results=10,
-        include_raw_content=False
-    )
-    html_output = convert_agent_json_to_html(result)
-    return html_page.replace("{{response}}", html_output)
+    user_input = form["msg"]
+    
+    # Get client IP for rate limiting
+    client_ip = request.client.host
+    
+    # 1. Rate limiting check
+    rate_allowed, rate_msg = rate_limiter.is_allowed(client_ip)
+    if not rate_allowed:
+        error_html = f"<div style='color: red;'><strong>⚠️ {rate_msg}</strong></div>"
+        return html_page.replace("{{response}}", error_html)
+    
+    # 2. Input validation and safety check
+    is_safe, safety_msg = guardrails.check_input(user_input)
+    if not is_safe:
+        error_html = f"<div style='color: red;'><strong>🚫 Input blocked:</strong> {safety_msg}</div>"
+        return html_page.replace("{{response}}", error_html)
+    
+    # 3. Sanitize input
+    sanitized_input = guardrails.sanitize_for_deals(user_input)
+    print(f"Processing query: {sanitized_input}")
+    
+    try:
+        model = OpenAIModel(
+            client_args={
+                "api_key": os.getenv("OPENAI_API_KEY"),
+            },
+            model_id="gpt-4o-mini",  # Specify the model name here
+            params={
+                "max_tokens": 1000,
+                "temperature": 0.7
+            }
+        )
+        agent = Agent(model=model,
+                      tools=[swarm, tavily_search, tavily_extract, tavily_crawl],
+                      system_prompt="You are a deal finding assistant, create a swarm of agents which can use the tavily tools imported above to find best deals for the user based on their query"
+                      )
+        # Real-time web search
+        result = agent.tool.tavily_search(
+            query=sanitized_input,
+            search_depth="advanced",
+            topic="general",
+            max_results=10,
+            include_raw_content=False
+        )
+        html_output = convert_agent_json_to_html(result)
+        
+        # Check output safety 
+         output_safe, output_msg = guardrails.check_output(html_output)
+         if not output_safe:
+             return html_page.replace("{{response}}", 
+                 f"<div style='color: orange;'>⚠️ Response filtered for safety</div>")
+        
+        return html_page.replace("{{response}}", html_output)
+    
+    except Exception as e:
+        print(f"Error processing request: {e}")
+        error_html = f"<div style='color: red;'>❌ An error occurred. Please try again.</div>"
+        return html_page.replace("{{response}}", error_html)
 
 
 import json
