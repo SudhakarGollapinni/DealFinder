@@ -271,13 +271,13 @@ async def swarm(request: Request):
                       tools=[swarm, tavily_search, tavily_extract, tavily_crawl],
                       system_prompt="You are a deal finding assistant, find best deals for the user based on their query"
                       )
-        # Real-time web search to get URLs
+        # Real-time web search to get URLs and snippets
         result = agent.tool.tavily_search(
             query=sanitized_input,
             search_depth="advanced",
             topic="general",
             max_results=10,
-            include_raw_content=False  # Don't need raw content yet
+            include_raw_content=True  # Get snippets which may contain prices
         )
         
         # Extract and parse product details from results
@@ -357,6 +357,34 @@ async def parse_products_with_extract(results: List[Dict], user_query: str, mode
         try:
             title = result.get("title", "")
             url = result.get("url", "")
+            # Check if search result snippet already has a price
+            snippet = result.get("content", "") or result.get("raw_content", "") or ""
+            snippet_price = None
+            product_name_from_snippet = None
+            
+            if snippet:
+                # Try to extract price from snippet
+                price_match = re.search(r'\$[\d,]+(?:\.\d{2})?', snippet)
+                if price_match:
+                    snippet_price = price_match.group(0)
+                    print(f"💰 Found price in search snippet: {snippet_price}")
+                
+                # Try to extract product name from snippet (first 100 chars usually have it)
+                snippet_preview = snippet[:200]
+                print(f"📄 Snippet preview: {snippet_preview}")
+            
+            # If snippet has price, use it directly without expensive extraction
+            if snippet_price:
+                print(f"✅ Using snippet price, skipping full extraction for speed")
+                products.append({
+                    "product_name": title,
+                    "details": snippet[:150] if snippet else "",  # Use first part of snippet as details
+                    "price": snippet_price,
+                    "deal_info": "",
+                    "url": url,
+                    "source": extract_domain(url)
+                })
+                continue
             
             print(f"Extracting full content from: {url}")
             
@@ -385,25 +413,52 @@ async def parse_products_with_extract(results: List[Dict], user_query: str, mode
                 if not api_response_str:
                     raise ValueError("Empty content text")
                 
+                print(f"🔍 Raw API response string (first 500 chars): {api_response_str[:500]}")
+                
                 # Try to parse the API response JSON
                 try:
                     api_response = json.loads(api_response_str)
                 except json.JSONDecodeError:
-                    # If it's not JSON, try ast.literal_eval
+                    # If it's not JSON, try ast.literal_eval (for Python dict string representation)
                     try:
                         api_response = ast.literal_eval(api_response_str)
-                    except:
+                    except Exception as e:
+                        print(f"⚠️ Failed to parse API response as JSON or Python dict: {e}")
                         # If all else fails, use the string as-is
-                        api_response = {"results": [{"content": api_response_str}]}
+                        api_response = {"results": [{"raw_content": api_response_str}]}
+                
+                print(f"🔍 Parsed API response keys: {list(api_response.keys()) if isinstance(api_response, dict) else 'Not a dict'}")
                 
                 # Extract the actual content from the API response
-                # Tavily extract API returns results with content field
+                # Tavily extract API returns: {"results": [{"raw_content": "...", "url": "..."}]}
                 if "results" in api_response and len(api_response["results"]) > 0:
-                    full_content = api_response["results"][0].get("content", "")
+                    # Find the result matching our URL
+                    matching_result = None
+                    for res in api_response["results"]:
+                        if res.get("url") == url:
+                            matching_result = res
+                            break
+                    # If no match, use first result
+                    if not matching_result:
+                        matching_result = api_response["results"][0]
+                    
+                    # Tavily uses "raw_content" not "content"
+                    full_content = matching_result.get("raw_content", matching_result.get("content", ""))
+                    content_length = len(full_content) if full_content else 0
+                    print(f"✅ Extracted content length: {content_length}")
+                    if content_length > 0:
+                        # Show a sample to verify we got real content
+                        sample = full_content[:200].replace('\n', ' ')
+                        print(f"📄 Content sample: {sample}...")
+                    else:
+                        print(f"⚠️ WARNING: No content extracted! This might be why prices aren't showing.")
+                elif "raw_content" in api_response:
+                    full_content = api_response["raw_content"]
                 elif "content" in api_response:
                     full_content = api_response["content"]
                 else:
                     # Fallback: use the string representation
+                    print(f"⚠️ No results or content found, using string as fallback")
                     full_content = api_response_str
                 
                 if not full_content or full_content == "" or full_content == "None":
@@ -438,6 +493,13 @@ async def parse_products_with_extract(results: List[Dict], user_query: str, mode
             
             # Debug: print first 500 chars of content to verify we're getting data
             print(f"Content preview (first 500 chars): {content_excerpt[:500]}")
+            
+            # Check if content contains price-like patterns
+            price_patterns = re.findall(r'\$[\d,]+(?:\.\d{2})?', content_excerpt)
+            if price_patterns:
+                print(f"💰 Found {len(price_patterns)} price patterns in content: {price_patterns[:5]}")
+            else:
+                print(f"⚠️ No price patterns found in content (searching for $XXX format)")
             
             # Use LLM to extract product details from full content
             prompt = f"""You are extracting product information from a webpage. The user is searching for: "{user_query}"
@@ -480,11 +542,13 @@ CRITICAL:
                 
                 # Parse LLM response
                 llm_output = response.choices[0].message.content.strip()
+                print(f"🔍 Raw LLM output (first 300 chars): {llm_output[:300]}")
                 
                 # Remove markdown code blocks if present
                 llm_output = re.sub(r'```json\s*', '', llm_output)
                 llm_output = re.sub(r'```\s*', '', llm_output)
                 llm_output = llm_output.strip()
+                print(f"🔍 Cleaned LLM output (first 300 chars): {llm_output[:300]}")
                 
                 # Try to extract JSON if it's embedded in text
                 # Find the first { and try to find matching }
@@ -512,15 +576,39 @@ CRITICAL:
                 # Validate that we have required fields
                 # Check if price exists and is not empty/None
                 raw_price = product_data.get("price")
+                print(f"🔍 Raw price from LLM: {repr(raw_price)} (type: {type(raw_price)})")
+                
                 if raw_price is None:
-                    print(f"⚠️ Price is None, setting to 'Price not available'")
-                    product_data["price"] = "Price not available"
+                    print(f"⚠️ Price is None, trying to extract from content")
+                    # Try to extract price directly from content
+                    price_match = re.search(r'\$[\d,]+(?:\.\d{2})?', content_excerpt)
+                    if price_match:
+                        product_data["price"] = price_match.group(0)
+                        print(f"✅ Extracted price from content: {product_data['price']}")
+                    elif snippet_price:
+                        product_data["price"] = snippet_price
+                        print(f"✅ Using price from search snippet: {snippet_price}")
+                    else:
+                        product_data["price"] = "Price not available"
+                        print(f"⚠️ No price found in content or snippet")
                 else:
                     # Convert to string and strip whitespace
                     price_value = str(raw_price).strip()
-                    if not price_value or price_value.lower() == "price not available" or price_value.lower() == "none":
-                        print(f"⚠️ Price is empty or 'Price not available', keeping as is")
-                        product_data["price"] = "Price not available"
+                    if not price_value or price_value.lower() == "price not available" or price_value.lower() == "none" or price_value == "":
+                        print(f"⚠️ Price is empty/invalid ('{price_value}'), trying to extract from content")
+                        # Try to extract price directly from content as fallback
+                        price_match = re.search(r'\$[\d,]+(?:\.\d{2})?', content_excerpt)
+                        if price_match:
+                            product_data["price"] = price_match.group(0)
+                            print(f"✅ Extracted price from content: {product_data['price']}")
+                        else:
+                            # Last resort: use price from search snippet if available
+                            if snippet_price:
+                                product_data["price"] = snippet_price
+                                print(f"✅ Using price from search snippet: {snippet_price}")
+                            else:
+                                product_data["price"] = "Price not available"
+                                print(f"⚠️ No price found in content or snippet")
                     else:
                         # Keep the price as extracted
                         product_data["price"] = price_value
@@ -699,24 +787,35 @@ def generate_product_cards_html(products: List[Dict]) -> str:
     for product in products:
         product_name = html.escape(str(product.get("product_name", "Product")))
         details = html.escape(str(product.get("details", "")))
-        # Get price and ensure it's a string
-        raw_price = product.get("price", "Price not available")
-        price = html.escape(str(raw_price)) if raw_price else "Price not available"
+        # Get price and ensure it's a string - be very explicit
+        raw_price = product.get("price")
+        print(f"  DEBUG: raw_price type={type(raw_price)}, value={repr(raw_price)}")
+        
+        if raw_price is None:
+            price = "Price not available"
+        elif isinstance(raw_price, str):
+            price = html.escape(raw_price.strip()) if raw_price.strip() else "Price not available"
+        else:
+            price = html.escape(str(raw_price).strip()) if str(raw_price).strip() else "Price not available"
+        
         deal_info = html.escape(str(product.get("deal_info", "")))
         url = product.get("url", "#")
         source = html.escape(str(product.get("source", "")))
         
         # Debug: print what we're rendering
-        print(f"  Rendering: name='{product_name}', price='{price}'")
+        print(f"  ✅ Rendering product card:")
+        print(f"     - Name: '{product_name}'")
+        print(f"     - Price: '{price}' (raw was: {repr(raw_price)})")
+        print(f"     - URL: '{url}'")
         
-        # Build product card
+        # Build product card - ensure price is always visible
         card_html = f"""
         <div class="product-card">
             <div class="product-name">{product_name}</div>
             {f'<div class="product-details">{details}</div>' if details else ''}
             
             <div class="price-section">
-                <div class="product-price">{price}</div>
+                <div class="product-price" style="color: #2c5282; font-size: 24px; font-weight: bold;">{price}</div>
                 {f'<div class="deal-badge">{deal_info}</div>' if deal_info else ''}
             </div>
             
