@@ -103,6 +103,9 @@ html_page = """
             box-shadow: 0 10px 40px rgba(0,0,0,0.2);
             min-height: 200px;
         }
+        #results {
+            display: block !important;
+        }
         .loading {
             display: none;
             text-align: center;
@@ -184,7 +187,19 @@ html_page = """
         
         document.getElementById('searchForm').addEventListener('submit', function() {
             document.getElementById('loading').classList.add('active');
-            document.getElementById('results').style.display = 'none';
+            // Don't hide results - let the new page load show them
+        });
+        
+        // Ensure results are visible when page loads
+        window.addEventListener('load', function() {
+            document.getElementById('loading').classList.remove('active');
+            var resultsDiv = document.getElementById('results');
+            if (resultsDiv) {
+                resultsDiv.style.display = 'block';
+                // Debug: log what's in the results div
+                console.log('Results div content length:', resultsDiv.innerHTML.length);
+                console.log('Results div has price elements:', resultsDiv.querySelectorAll('.product-price').length);
+            }
         });
     </script>
 </body>
@@ -491,9 +506,26 @@ CRITICAL:
                 
                 product_data = json.loads(llm_output)
                 
+                # Debug: print the raw product_data
+                print(f"🔍 Raw product_data: {product_data}")
+                
                 # Validate that we have required fields
-                if "price" not in product_data or not product_data.get("price"):
+                # Check if price exists and is not empty/None
+                raw_price = product_data.get("price")
+                if raw_price is None:
+                    print(f"⚠️ Price is None, setting to 'Price not available'")
                     product_data["price"] = "Price not available"
+                else:
+                    # Convert to string and strip whitespace
+                    price_value = str(raw_price).strip()
+                    if not price_value or price_value.lower() == "price not available" or price_value.lower() == "none":
+                        print(f"⚠️ Price is empty or 'Price not available', keeping as is")
+                        product_data["price"] = "Price not available"
+                    else:
+                        # Keep the price as extracted
+                        product_data["price"] = price_value
+                        print(f"✅ Price validated: '{price_value}'")
+                
                 if "product_name" not in product_data or not product_data.get("product_name"):
                     product_data["product_name"] = title
                 
@@ -502,7 +534,7 @@ CRITICAL:
                 product_data["source"] = extract_domain(url)
                 
                 products.append(product_data)
-                print(f"✅ Extracted: {product_data.get('product_name')} - {product_data.get('price')}")
+                print(f"✅ Extracted: {product_data.get('product_name')} - Price: '{product_data.get('price')}' (type: {type(product_data.get('price'))})")
                 
             except json.JSONDecodeError as e:
                 print(f"Failed to parse LLM JSON response: {e}")
@@ -564,6 +596,11 @@ def generate_product_cards_html(products: List[Dict]) -> str:
     """
     Generate beautiful product cards HTML
     """
+    # Debug: print what we're receiving
+    print(f"🎨 Generating HTML for {len(products)} products")
+    for idx, p in enumerate(products):
+        print(f"  Product {idx}: name='{p.get('product_name')}', price='{p.get('price')}'")
+    
     html_parts = ["""
     <style>
         .deals-container {
@@ -660,12 +697,17 @@ def generate_product_cards_html(products: List[Dict]) -> str:
         """)
     
     for product in products:
-        product_name = html.escape(product.get("product_name", "Product"))
-        details = html.escape(product.get("details", ""))
-        price = html.escape(product.get("price", "Price not available"))
-        deal_info = html.escape(product.get("deal_info", ""))
+        product_name = html.escape(str(product.get("product_name", "Product")))
+        details = html.escape(str(product.get("details", "")))
+        # Get price and ensure it's a string
+        raw_price = product.get("price", "Price not available")
+        price = html.escape(str(raw_price)) if raw_price else "Price not available"
+        deal_info = html.escape(str(product.get("deal_info", "")))
         url = product.get("url", "#")
-        source = html.escape(product.get("source", ""))
+        source = html.escape(str(product.get("source", "")))
+        
+        # Debug: print what we're rendering
+        print(f"  Rendering: name='{product_name}', price='{price}'")
         
         # Build product card
         card_html = f"""
