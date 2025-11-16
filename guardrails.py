@@ -118,7 +118,7 @@ class SimpleGuardrails:
             # Direct deal terms
             'deal', 'deals', 'discount', 'sale', 'offer', 'coupon', 'promo',
             'cheap', 'cheapest', 'affordable', 'budget', 'price', 'cost',
-            'bargain', 'clearance', 'best price', 'lowest price',
+            'bargain', 'clearance', 'best price', 'lowest price', 'bulk',
             
             # Shopping intent
             'buy', 'purchase', 'shop', 'order', 'get',

@@ -13,6 +13,7 @@ from strands.models.openai import OpenAIModel
 from pydantic import BaseModel
 from guardrails import SimpleGuardrails, RateLimiter
 
+
 app = FastAPI()
 
 # Initialize guardrails
@@ -23,10 +24,10 @@ html_page = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Chat UI</title>
+    <title>Deal Finder</title>
 </head>
 <body>
-    <h1>My Chat UI</h1>
+    <h1>Find your Favourite Deals</h1>
 
     <form method="post" action="/swarm">
         <input type="text" name="msg" style="width:300px;" placeholder="Ask something..."/>
@@ -50,22 +51,22 @@ def ui_home():
 async def swarm(request: Request):
     form = await request.form()
     user_input = form["msg"]
-    
+
     # Get client IP for rate limiting
     client_ip = request.client.host
-    
+
     # 1. Rate limiting check
     rate_allowed, rate_msg = rate_limiter.is_allowed(client_ip)
     if not rate_allowed:
         error_html = f"<div style='color: red;'><strong>⚠️ {rate_msg}</strong></div>"
         return html_page.replace("{{response}}", error_html)
-    
+
     # 2. Input validation and safety check
     is_safe, safety_msg = guardrails.check_input(user_input)
     if not is_safe:
         error_html = f"<div style='color: red;'><strong>🚫 Input blocked:</strong> {safety_msg}</div>"
         return html_page.replace("{{response}}", error_html)
-    
+
     # 3. Check if query is deal-related
     is_deal, deal_msg = guardrails.is_deal_related(user_input)
     if not is_deal:
@@ -85,9 +86,10 @@ async def swarm(request: Request):
         return html_page.replace("{{response}}", error_html)
     
     # 4. Sanitize input
+
     sanitized_input = guardrails.sanitize_for_deals(user_input)
     print(f"Processing query: {sanitized_input}")
-    
+
     try:
         model = OpenAIModel(
             client_args={
@@ -112,19 +114,27 @@ async def swarm(request: Request):
             include_raw_content=False
         )
         html_output = convert_agent_json_to_html(result)
-        
+
         # Check output safety (uncomment if needed)
         output_safe, output_msg = guardrails.check_output(html_output)
         if not output_safe:
             return html_page.replace("{{response}}", 
-        #         f"<div style='color: orange;'>⚠️ Response filtered for safety</div>")
+                f"<div style='color: orange;'>⚠️ Response filtered for safety</div>")
         
+
+        # Check output safety 
+        output_safe, output_msg = guardrails.check_output(html_output)
+        if not output_safe:
+            return html_page.replace("{{response}}",
+                                     f"<div style='color: orange;'>⚠️ Response filtered for safety</div>")
+
         return html_page.replace("{{response}}", html_output)
-    
+
     except Exception as e:
         print(f"Error processing request: {e}")
         error_html = f"<div style='color: red;'>❌ An error occurred. Please try again.</div>"
         return html_page.replace("{{response}}", error_html)
+
 
 
 import json
