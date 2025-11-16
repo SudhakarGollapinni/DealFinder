@@ -130,6 +130,59 @@ def test_output_validation():
     print()
 
 
+def test_intent_validation():
+    """Test deal-related intent validation"""
+    print("\n🛒 INTENT VALIDATION TESTS")
+    print("-" * 60)
+    
+    g = SimpleGuardrails()
+    
+    test_cases = [
+        # (input, expected_is_deal, description)
+        ("update", False, "Single irrelevant word"),
+        ("hello", False, "Greeting"),
+        ("what's the weather", False, "Weather query"),
+        ("tell me a joke", False, "Entertainment request"),
+        ("Find laptop deals", True, "Deal keyword + product"),
+        ("iPhone 15 price", True, "Product + price keyword"),
+        ("cheap gaming console", True, "Price keyword + product"),
+        ("MacBook Air discount", True, "Product + discount keyword"),
+        ("Best PS5 deals", True, "Product model + deal keyword"),
+        ("where can I buy AirPods", True, "Shopping question"),
+        ("M1 MacBook", True, "Model number pattern"),
+        ("looking for tablet", True, "Shopping intent + product"),
+        ("need new phone", True, "Need + product"),
+        ("how much is iPhone 15", True, "Price question + product"),
+    ]
+    
+    print(f"{'Query':<40} {'Expected':<12} {'Result':<12} {'Status':<8}")
+    print("=" * 80)
+    
+    passed = 0
+    failed = 0
+    
+    for query, expected_deal, description in test_cases:
+        is_deal, msg = g.is_deal_related(query)
+        
+        if is_deal == expected_deal:
+            status = "✅ PASS"
+            passed += 1
+        else:
+            status = "❌ FAIL"
+            failed += 1
+        
+        expected_str = "Deal-related" if expected_deal else "Not deal"
+        result_str = "Deal-related" if is_deal else "Not deal"
+        
+        print(f"{query:<40} {expected_str:<12} {result_str:<12} {status:<8}")
+    
+    print()
+    print(f"Intent Validation: ✅ {passed} passed, ❌ {failed} failed")
+    print()
+    
+    return failed == 0
+
+
 def demo_sanitization():
     """Demonstrate input sanitization"""
     print("\n🧹 SANITIZATION DEMO")
@@ -171,8 +224,10 @@ if __name__ == "__main__":
     
     # Run additional tests
     test_output_validation()
+    intent_success = test_intent_validation()
     demo_sanitization()
     
     # Exit with appropriate code
-    exit(0 if success else 1)
+    all_success = success and intent_success
+    exit(0 if all_success else 1)
 

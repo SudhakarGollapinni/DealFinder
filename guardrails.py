@@ -104,6 +104,76 @@ class SimpleGuardrails:
         
         return True, "OK"
     
+    def is_deal_related(self, user_input: str) -> Tuple[bool, str]:
+        """
+        Check if the query is actually about finding deals/products/shopping
+        
+        Returns:
+            (is_deal_related, message or suggested_query)
+        """
+        user_input_lower = user_input.lower()
+        
+        # Deal-related keywords (products, shopping intent)
+        deal_keywords = [
+            # Direct deal terms
+            'deal', 'deals', 'discount', 'sale', 'offer', 'coupon', 'promo',
+            'cheap', 'cheapest', 'affordable', 'budget', 'price', 'cost',
+            'bargain', 'clearance', 'best price', 'lowest price',
+            
+            # Shopping intent
+            'buy', 'purchase', 'shop', 'order', 'get',
+            'find', 'looking for', 'need', 'want',
+            
+            # Product categories (common examples)
+            'laptop', 'phone', 'iphone', 'macbook', 'ipad', 'airpods',
+            'tv', 'monitor', 'keyboard', 'mouse', 'headphones', 'speaker',
+            'console', 'xbox', 'playstation', 'ps5', 'nintendo', 'switch',
+            'camera', 'watch', 'tablet', 'computer', 'gaming',
+            'shoes', 'clothing', 'clothes', 'shirt', 'pants', 'jacket',
+            'book', 'books', 'toy', 'toys', 'furniture', 'appliance',
+            'car', 'bike', 'bicycle', 'drone', 'robot', 'vacuum',
+            
+            # Brand names (common shopping brands)
+            'apple', 'samsung', 'sony', 'dell', 'hp', 'lenovo',
+            'nike', 'adidas', 'amazon', 'best buy',
+        ]
+        
+        # Check if any deal-related keyword is present
+        has_deal_keyword = any(keyword in user_input_lower for keyword in deal_keywords)
+        
+        # Additional heuristics
+        # Check for product-like patterns (e.g., "iPhone 15", "PS5", "M1 MacBook")
+        has_product_pattern = bool(re.search(r'\b[A-Z][a-z]*\s*\d+\b', user_input))  # e.g., "iPhone 15"
+        has_model_number = bool(re.search(r'\b[A-Z]\d+\b', user_input))  # e.g., "M1", "PS5"
+        
+        # Check for shopping questions
+        shopping_question_patterns = [
+            r'\b(where|how)\s+(can|do|to)\s+(i\s+)?(buy|get|find|purchase)',
+            r'\bwhat.*best\b',
+            r'\bhow\s+much\b',
+        ]
+        has_shopping_question = any(
+            re.search(pattern, user_input_lower) 
+            for pattern in shopping_question_patterns
+        )
+        
+        is_related = (
+            has_deal_keyword or 
+            has_product_pattern or 
+            has_model_number or 
+            has_shopping_question
+        )
+        
+        if is_related:
+            return True, "Query is deal-related"
+        else:
+            # Provide helpful feedback
+            return False, (
+                "This doesn't appear to be a deal/product query. "
+                "Try asking about specific products (e.g., 'laptop deals', 'iPhone 15 price', 'best gaming console') "
+                "or use shopping keywords like 'find', 'buy', 'cheap', 'deal', etc."
+            )
+    
     def sanitize_for_deals(self, user_input: str) -> str:
         """
         Sanitize and normalize input for deal finding

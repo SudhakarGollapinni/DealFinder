@@ -66,7 +66,25 @@ async def swarm(request: Request):
         error_html = f"<div style='color: red;'><strong>🚫 Input blocked:</strong> {safety_msg}</div>"
         return html_page.replace("{{response}}", error_html)
     
-    # 3. Sanitize input
+    # 3. Check if query is deal-related
+    is_deal, deal_msg = guardrails.is_deal_related(user_input)
+    if not is_deal:
+        error_html = f"""
+        <div style='color: orange; padding: 15px; border-left: 4px solid orange;'>
+            <strong>🛒 Not a deal query</strong>
+            <p>{deal_msg}</p>
+            <p><strong>Examples:</strong></p>
+            <ul>
+                <li>"Find laptop deals"</li>
+                <li>"iPhone 15 best price"</li>
+                <li>"Cheap gaming console"</li>
+                <li>"MacBook Air discount"</li>
+            </ul>
+        </div>
+        """
+        return html_page.replace("{{response}}", error_html)
+    
+    # 4. Sanitize input
     sanitized_input = guardrails.sanitize_for_deals(user_input)
     print(f"Processing query: {sanitized_input}")
     
@@ -95,11 +113,11 @@ async def swarm(request: Request):
         )
         html_output = convert_agent_json_to_html(result)
         
-        # Check output safety 
-         output_safe, output_msg = guardrails.check_output(html_output)
-         if not output_safe:
-             return html_page.replace("{{response}}", 
-                 f"<div style='color: orange;'>⚠️ Response filtered for safety</div>")
+        # Check output safety (uncomment if needed)
+        output_safe, output_msg = guardrails.check_output(html_output)
+        if not output_safe:
+            return html_page.replace("{{response}}", 
+        #         f"<div style='color: orange;'>⚠️ Response filtered for safety</div>")
         
         return html_page.replace("{{response}}", html_output)
     
