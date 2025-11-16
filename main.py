@@ -266,7 +266,7 @@ async def swarm(request: Request):
         )
         
         # Extract and parse product details from results
-        html_output = extract_and_display_products(
+        html_output = await extract_and_display_products(
             result, 
             sanitized_input, 
             model
@@ -293,7 +293,7 @@ import re
 from typing import List, Dict
 
 
-def extract_and_display_products(result_dict, user_query: str, model) -> str:
+async def extract_and_display_products(result_dict, user_query: str, model) -> str:
     """
     Extract product details using tavily_extract for full page content
     """
@@ -319,18 +319,20 @@ def extract_and_display_products(result_dict, user_query: str, model) -> str:
             return "<div style='color: orange;'>No results found. Try a different search.</div>"
         
         # Parse products using tavily_extract
-        products = parse_products_with_extract(results, user_query, model)
+        products = await parse_products_with_extract(results, user_query, model)
         
         # Generate HTML
         return generate_product_cards_html(products)
         
     except Exception as e:
         print(f"Error extracting products: {e}")
+        import traceback
+        traceback.print_exc()
         # Fallback to simple display
         return convert_agent_json_to_html_simple(result_dict)
 
 
-def parse_products_with_extract(results: List[Dict], user_query: str, model) -> List[Dict]:
+async def parse_products_with_extract(results: List[Dict], user_query: str, model) -> List[Dict]:
     """
     Use tavily_extract to get full page content, then LLM to parse product details
     """
@@ -345,22 +347,51 @@ def parse_products_with_extract(results: List[Dict], user_query: str, model) -> 
             
             # Use tavily_extract to get full page content
             try:
-                extract_result = tavily_extract(url=url)
+                # tavily_extract expects a list of URLs and is async
+                extract_result = await tavily_extract(urls=[url], extract_depth="advanced", format="text")
                 
-                # Extract the content from the result
-                if isinstance(extract_result, dict):
-                    full_content = extract_result.get("content", "")
-                elif hasattr(extract_result, 'content'):
-                    # Handle if it's an object with content attribute
-                    content_data = extract_result.content
-                    if isinstance(content_data, list) and len(content_data) > 0:
-                        full_content = content_data[0].get("text", "")
-                    else:
-                        full_content = str(content_data)
+                # Parse the result structure
+                # tavily_extract returns: {"status": "success", "content": [{"text": str(api_response)}]}
+                if not isinstance(extract_result, dict):
+                    raise ValueError(f"Unexpected extract_result type: {type(extract_result)}")
+                
+                if extract_result.get("status") != "success":
+                    error_msg = extract_result.get("content", [{}])[0].get("text", "Unknown error")
+                    print(f"Tavily extract failed for {url}: {error_msg}")
+                    raise ValueError(f"Extraction failed: {error_msg}")
+                
+                # The content is a string representation of the API response
+                content_list = extract_result.get("content", [])
+                if not content_list or len(content_list) == 0:
+                    raise ValueError("No content in extract result")
+                
+                # Parse the string representation of the API response
+                api_response_str = content_list[0].get("text", "")
+                if not api_response_str:
+                    raise ValueError("Empty content text")
+                
+                # Try to parse the API response JSON
+                try:
+                    api_response = json.loads(api_response_str)
+                except json.JSONDecodeError:
+                    # If it's not JSON, try ast.literal_eval
+                    try:
+                        api_response = ast.literal_eval(api_response_str)
+                    except:
+                        # If all else fails, use the string as-is
+                        api_response = {"results": [{"content": api_response_str}]}
+                
+                # Extract the actual content from the API response
+                # Tavily extract API returns results with content field
+                if "results" in api_response and len(api_response["results"]) > 0:
+                    full_content = api_response["results"][0].get("content", "")
+                elif "content" in api_response:
+                    full_content = api_response["content"]
                 else:
-                    full_content = str(extract_result)
+                    # Fallback: use the string representation
+                    full_content = api_response_str
                 
-                if not full_content or full_content == "":
+                if not full_content or full_content == "" or full_content == "None":
                     print(f"No content extracted for {url}, using title only")
                     products.append({
                         "product_name": title,
@@ -374,6 +405,8 @@ def parse_products_with_extract(results: List[Dict], user_query: str, model) -> 
                 
             except Exception as e:
                 print(f"Error extracting content from {url}: {e}")
+                import traceback
+                traceback.print_exc()
                 # Fallback to basic info
                 products.append({
                     "product_name": title,
@@ -388,48 +421,117 @@ def parse_products_with_extract(results: List[Dict], user_query: str, model) -> 
             # Truncate content to avoid token limits (but use more than snippets)
             content_excerpt = full_content[:4000]  # 2x the snippet length
             
+            # Debug: print first 500 chars of content to verify we're getting data
+            print(f"Content preview (first 500 chars): {content_excerpt[:500]}")
+            
             # Use LLM to extract product details from full content
-            prompt = f"""Extract product information from this webpage for the query: "{user_query}"
+            prompt = f"""You are extracting product information from a webpage. The user is searching for: "{user_query}"
 
 Page Title: {title}
 URL: {url}
-Page Content: {content_excerpt}
 
-Extract and return ONLY a JSON object with these fields:
+Page Content:
+{content_excerpt}
+
+IMPORTANT: Look carefully for prices in the content. Prices may appear as:
+- Dollar amounts like $999, $1,299, $1,299.99
+- "From $X" or "Starting at $X"
+- "Was $X, Now $Y" or "Save $X"
+- Percentage discounts like "20% off" or "Save 20%"
+- Price ranges like "$999-$1,299"
+
+Extract and return ONLY a valid JSON object with these exact fields:
 {{
   "product_name": "Specific product name with model (e.g., 'MacBook Air M2 13-inch')",
   "details": "Model, color, storage, configuration (e.g., '256GB, Space Gray, 8GB RAM')",
-  "price": "Current price with currency (e.g., '$999' or 'From $999')",
-  "deal_info": "Discount, savings, or promotion (e.g., 'Save $200' or '20% off' or 'Black Friday Deal')",
-  "in_stock": true/false
+  "price": "Current price with currency symbol (e.g., '$999' or 'From $999' or '$999-$1,299'). If no price found, use 'Price not available'",
+  "deal_info": "Discount, savings, or promotion (e.g., 'Save $200' or '20% off' or 'Black Friday Deal'). Leave empty if none.",
+  "in_stock": true
 }}
 
-Be specific and accurate. Extract actual prices and deal information from the content.
-If information is not available, use empty string for text fields.
-Return ONLY valid JSON, no other text."""
+CRITICAL: 
+- Search the content thoroughly for any price information
+- If you see any dollar amount, percentage, or price-related text, include it in the "price" field
+- Do NOT use "Price not available" unless you've searched the entire content and found NO price information
+- Return ONLY valid JSON, no markdown, no explanations, no other text"""
 
-            response = model.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,  # Lower temp for more consistent extraction
-                max_tokens=400
-            )
-            
-            # Parse LLM response
-            llm_output = response.choices[0].message.content.strip()
-            
-            # Remove markdown code blocks if present
-            llm_output = re.sub(r'```json\s*', '', llm_output)
-            llm_output = re.sub(r'```\s*', '', llm_output)
-            
-            product_data = json.loads(llm_output)
-            
-            # Add URL and source
-            product_data["url"] = url
-            product_data["source"] = extract_domain(url)
-            
-            products.append(product_data)
-            print(f"✅ Extracted: {product_data.get('product_name')} - {product_data.get('price')}")
+            try:
+                response = model.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,  # Lower temp for more consistent extraction
+                    max_tokens=400
+                )
+                
+                # Parse LLM response
+                llm_output = response.choices[0].message.content.strip()
+                
+                # Remove markdown code blocks if present
+                llm_output = re.sub(r'```json\s*', '', llm_output)
+                llm_output = re.sub(r'```\s*', '', llm_output)
+                llm_output = llm_output.strip()
+                
+                # Try to extract JSON if it's embedded in text
+                # Find the first { and try to find matching }
+                start_idx = llm_output.find('{')
+                if start_idx != -1:
+                    # Count braces to find the matching closing brace
+                    brace_count = 0
+                    end_idx = start_idx
+                    for i in range(start_idx, len(llm_output)):
+                        if llm_output[i] == '{':
+                            brace_count += 1
+                        elif llm_output[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_idx = i + 1
+                                break
+                    if end_idx > start_idx:
+                        llm_output = llm_output[start_idx:end_idx]
+                
+                product_data = json.loads(llm_output)
+                
+                # Validate that we have required fields
+                if "price" not in product_data or not product_data.get("price"):
+                    product_data["price"] = "Price not available"
+                if "product_name" not in product_data or not product_data.get("product_name"):
+                    product_data["product_name"] = title
+                
+                # Add URL and source
+                product_data["url"] = url
+                product_data["source"] = extract_domain(url)
+                
+                products.append(product_data)
+                print(f"✅ Extracted: {product_data.get('product_name')} - {product_data.get('price')}")
+                
+            except json.JSONDecodeError as e:
+                print(f"Failed to parse LLM JSON response: {e}")
+                print(f"LLM output: {llm_output[:200]}")
+                # Fallback: try to extract price manually from content
+                price_match = re.search(r'\$[\d,]+(?:\.\d{2})?', content_excerpt)
+                price = price_match.group(0) if price_match else "Price not available"
+                
+                products.append({
+                    "product_name": title,
+                    "details": "",
+                    "price": price,
+                    "deal_info": "",
+                    "url": url,
+                    "source": extract_domain(url)
+                })
+            except Exception as e:
+                print(f"Error in LLM extraction: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fallback to basic info
+                products.append({
+                    "product_name": title,
+                    "details": "",
+                    "price": "Price not available",
+                    "deal_info": "",
+                    "url": url,
+                    "source": extract_domain(url)
+                })
             
         except Exception as e:
             print(f"Error parsing result {idx}: {e}")
