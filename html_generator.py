@@ -6,7 +6,7 @@ import ast
 from typing import List, Dict
 
 
-def generate_product_cards_html(products: List[Dict]) -> str:
+def generate_product_cards_html(products: List[Dict], user_query: str = "") -> str:
     """
     Generate beautiful product cards HTML
     """
@@ -14,6 +14,29 @@ def generate_product_cards_html(products: List[Dict]) -> str:
     print(f"🎨 Generating HTML for {len(products)} products")
     for idx, p in enumerate(products):
         print(f"  Product {idx}: name='{p.get('product_name')}', price='{p.get('price')}'")
+    
+    # Use data attribute approach to avoid quote escaping issues
+    if user_query:
+        import json
+        import html
+        # JSON encode the query and HTML escape it for the data attribute
+        user_query_json = json.dumps(user_query)
+        user_query_escaped = html.escape(user_query_json)
+        # Use data attribute and simple onclick that reads from data attribute
+        notify_button = f'<button class="notify-button" data-query="{user_query_escaped}" onclick="handleNotifyClick(this)" style="margin-left: 20px; white-space: nowrap; cursor: pointer;">🔔 Notify Me on Price Drops</button>'
+    else:
+        notify_button = ''
+    
+    # Build header with notify button
+    header_html = f"""
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <div>
+            <h2 style="color: #2d3748; margin-bottom: 10px; margin: 0;">🎯 Best Deals Found</h2>
+            <p style="color: #718096; margin: 5px 0 0 0;">Found {len(products)} products matching your search</p>
+        </div>
+        {notify_button}
+    </div>
+    """
     
     html_parts = ["""
     <style>
@@ -89,18 +112,133 @@ def generate_product_cards_html(products: List[Dict]) -> str:
             font-size: 12px;
             margin-top: 8px;
         }
+        .notify-button {
+            background: #48bb78;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 14px;
+        }
+        .notify-button:hover {
+            background: #38a169;
+        }
         .no-results {
             text-align: center;
             padding: 40px;
             color: #718096;
         }
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        .modal-content {
+            background-color: white;
+            margin: 15% auto;
+            padding: 30px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .modal-header h2 {
+            margin: 0;
+            color: #2d3748;
+        }
+        .close {
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close:hover {
+            color: #000;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #4a5568;
+            font-weight: 500;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #4a5568;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-secondary:hover {
+            background: #cbd5e0;
+        }
+        .error-message {
+            color: #e53e3e;
+            font-size: 14px;
+            margin-top: 8px;
+        }
+        .success-message {
+            color: #48bb78;
+            font-size: 14px;
+            margin-top: 8px;
+        }
     </style>
+    """]
     
-    <h2 style="color: #2d3748; margin-bottom: 10px;">🎯 Best Deals Found</h2>
-    <p style="color: #718096; margin-bottom: 20px;">Found {count} products matching your search</p>
-    
+    # Add header with notify button
+    html_parts.append(header_html)
+    html_parts.append("""
     <div class="deals-container">
-    """.replace("{count}", str(len(products)))]
+    """)
     
     if not products:
         html_parts.append("""
@@ -145,9 +283,11 @@ def generate_product_cards_html(products: List[Dict]) -> str:
                 {f'<div class="deal-badge">{deal_info}</div>' if deal_info else ''}
             </div>
             
-            <a href="{url}" target="_blank" class="product-link">
-                View Deal →
-            </a>
+            <div style="margin-top: 12px;">
+                <a href="{url}" target="_blank" class="product-link">
+                    View Deal →
+                </a>
+            </div>
             
             {f'<div class="source-tag">📍 {source}</div>' if source else ''}
         </div>

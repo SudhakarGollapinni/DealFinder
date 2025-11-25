@@ -20,23 +20,47 @@ async def extract_and_display_products(result_dict, user_query: str, agent: Agen
     """
     try:
         # Extract "text" field inside content[0]
-        text_block = result_dict["content"][0]["text"]
+        if not result_dict.get("content") or len(result_dict["content"]) == 0:
+            print(f"❌ No content in result_dict. Keys: {list(result_dict.keys())}")
+            print(f"❌ Full result_dict: {result_dict}")
+            return "<div style='color: red;'>Error: No search results returned. Please check your API key and try again.</div>"
         
-        # Try to parse as JSON/dict
+        # Check if there's an error status
+        if result_dict.get("status") == "error":
+            error_msg = result_dict.get("content", [{}])[0].get("text", "Unknown error")
+            print(f"❌ Tavily API error: {error_msg}")
+            return f"<div style='color: red;'>Search API error: {error_msg}</div>"
+        
+        text_block = result_dict["content"][0]["text"]
+        print(f"📄 Text block length: {len(text_block)} chars")
+        print(f"📄 Text block preview (first 300 chars): {text_block[:300]}")
+        
+        # Tavily returns a string representation of a Python dict
+        # Try ast.literal_eval first (for Tavily format - stringified Python dict)
+        inner_data = None
         try:
             inner_data = ast.literal_eval(text_block)
-        except (ValueError, SyntaxError) as e:
-            print(f"Error parsing search results: {e}")
-            print(f"Text block: {text_block[:200]}")
-            # Try JSON parse as fallback
+            print(f"✅ Successfully parsed with ast.literal_eval (Tavily format)")
+        except (ValueError, SyntaxError) as ast_err:
+            print(f"⚠️ ast.literal_eval failed: {ast_err}")
+            # Try JSON parse as fallback (for Serper/SerpAPI format)
             try:
                 inner_data = json.loads(text_block)
-            except:
-                return "<div style='color: red;'>Error parsing search results. Please try again.</div>"
+                print(f"✅ Successfully parsed with json.loads")
+            except json.JSONDecodeError as json_err:
+                print(f"❌ Both parsing methods failed. AST error: {ast_err}, JSON error: {json_err}")
+                print(f"Text block type: {type(text_block)}")
+                print(f"Text block preview: {text_block[:500]}")
+                return f"<div style='color: red;'>Error parsing search results. Please try again.</div>"
+        
+        if not inner_data:
+            return f"<div style='color: red;'>Error: Could not parse search results. Please try again.</div>"
         
         results = inner_data.get("results", [])
+        print(f"📊 Extracted {len(results)} results from parsed data")
         
         if not results:
+            print(f"⚠️ No results found in inner_data. Keys: {list(inner_data.keys()) if isinstance(inner_data, dict) else 'Not a dict'}")
             return "<div style='color: orange;'>No results found. Try a different search.</div>"
         
         # Filter results to only include e-commerce/product sites using LLM
@@ -47,14 +71,19 @@ async def extract_and_display_products(result_dict, user_query: str, agent: Agen
         
         print(f"📊 Filtered {len(results)} results down to {len(filtered_results)} e-commerce sites")
         
+        # Log domain diversity
+        domains = [extract_domain(r.get("url", "")) for r in filtered_results]
+        unique_domains = set(domains)
+        print(f"🌐 Found results from {len(unique_domains)} unique domains: {', '.join(list(unique_domains)[:10])}")
+        
         # Parse products using tavily_extract
         products = await parse_products_with_extract(filtered_results, user_query, agent, cost_tracker)
         
         # Sort products by price (lowest first)
         products = sort_products_by_price(products)
         
-        # Generate HTML
-        return generate_product_cards_html(products)
+        # Generate HTML (pass user_query for notification button)
+        return generate_product_cards_html(products, user_query)
         
     except Exception as e:
         print(f"Error extracting products: {e}")
@@ -71,8 +100,16 @@ async def parse_products_with_extract(results: List[Dict], user_query: str, agen
     products = []
     
     # Process up to 9 results (or all if fewer than 9)
-    max_results = min(9, len(results))
-    for idx, result in enumerate(results[:max_results]):
+    # Try to get at least 9 products, so process more results if needed
+    max_results_to_process = min(15, len(results))  # Process up to 15 to account for failures
+    products_found = 0
+    target_products = 9
+    
+    for idx, result in enumerate(results[:max_results_to_process]):
+        # Stop if we've found enough products
+        if products_found >= target_products:
+            print(f"✅ Found {products_found} products, stopping extraction")
+            break
         try:
             title = result.get("title", "")
             url = result.get("url", "")
@@ -81,32 +118,87 @@ async def parse_products_with_extract(results: List[Dict], user_query: str, agen
             snippet_price = None
             snippet_price_backup = None  # Keep backup for fallback
             
-            # Quick check: exclude PDFs and obvious non-product pages
+            # Quick check: exclude PDFs, YouTube, Reddit, forums, and obvious non-product pages
             url_lower = url.lower()
-            if url_lower.endswith('.pdf') or '/pdf' in url_lower or 'review' in title.lower() or 'comparison' in title.lower():
-                print(f"🚫 Skipping {url[:60]}... (PDF or review page)")
+            excluded_domains = [
+                'youtube.com', 'youtu.be', 'reddit.com', 'quora.com', 'stackoverflow.com',
+                'wikipedia.org', 'twitter.com', 'facebook.com', 'instagram.com',
+                'pinterest.com', 'tumblr.com', 'medium.com', 'blogspot.com',
+                'wordpress.com', 'linkedin.com', 'discord.com', 'tiktok.com'
+            ]
+            excluded_keywords = ['review', 'comparison', 'forum', 'discussion', 'article', 'blog']
+            
+            # Check domain
+            if any(domain in url_lower for domain in excluded_domains):
+                print(f"🚫 Skipping {url[:60]}... (excluded domain)")
+                continue
+            
+            # Check URL and title for excluded keywords
+            if (url_lower.endswith('.pdf') or '/pdf' in url_lower or 
+                any(keyword in title.lower() for keyword in excluded_keywords) or
+                any(keyword in url_lower for keyword in excluded_keywords)):
+                print(f"🚫 Skipping {url[:60]}... (PDF or non-product page)")
                 continue
             
             if snippet:
-                # Try to extract price from snippet - try multiple patterns
-                # Pattern 1: Standard $XXX.XX format
-                price_match = re.search(r'\$[\d,]+(?:\.\d{2})?', snippet)
-                if price_match:
-                    snippet_price = price_match.group(0)
-                    snippet_price_backup = snippet_price
-                    print(f"💰 Found price in search snippet: {snippet_price}")
-                else:
-                    # Pattern 2: Price without $ (common in some formats)
-                    price_match = re.search(r'(?:price|cost|buy)[:\s]+([\d,]+\.?\d{2})', snippet, re.IGNORECASE)
+                # Check if this is a carrier page - prioritize full retail price
+                is_carrier_page = any(carrier in url_lower for carrier in ['verizon.com', 'att.com', 't-mobile.com', 'tmobile.com', 'sprint.com', 'uscellular.com'])
+                
+                if is_carrier_page:
+                    # For carrier pages, look specifically for "Full retail price" or "Outright purchase" first
+                    full_retail_patterns = [
+                        r'Full retail price[:\s]+\$?([\d,]+(?:\.\d{2})?)',
+                        r'Outright purchase[:\s]+\$?([\d,]+(?:\.\d{2})?)',
+                        r'Buy outright[:\s]+\$?([\d,]+(?:\.\d{2})?)',
+                        r'One-time purchase[:\s]+\$?([\d,]+(?:\.\d{2})?)',
+                        r'Full price[:\s]+\$?([\d,]+(?:\.\d{2})?)',
+                        r'Retail price[:\s]+\$?([\d,]+(?:\.\d{2})?)',
+                    ]
+                    
+                    for pattern in full_retail_patterns:
+                        price_match = re.search(pattern, snippet, re.IGNORECASE)
+                        if price_match:
+                            snippet_price = f"${price_match.group(1)}"
+                            snippet_price_backup = snippet_price
+                            print(f"💰 Found FULL RETAIL price in carrier snippet: {snippet_price}")
+                            break
+                
+                # If not found or not carrier page, use regular price patterns
+                if not snippet_price:
+                    # Pattern 1: Standard $XXX.XX format
+                    price_match = re.search(r'\$[\d,]+(?:\.\d{2})?', snippet)
                     if price_match:
-                        snippet_price_backup = f"${price_match.group(1)}"
-                        print(f"💰 Found price in snippet (without $): {snippet_price_backup}")
+                        potential_price = price_match.group(0)
+                        
+                        # For carrier pages, skip monthly payment plans and savings
+                        if is_carrier_page:
+                            # Get context around the price
+                            price_idx = snippet.lower().find(potential_price.lower())
+                            if price_idx != -1:
+                                context = snippet[max(0, price_idx-30):price_idx+50].lower()
+                                # Skip if it's a monthly payment or savings amount
+                                if any(phrase in context for phrase in ['/mo', 'per month', 'monthly', 'for 36', 'for 24', 'saving', 'save']):
+                                    print(f"🚫 Skipping monthly payment/savings amount: {potential_price}")
+                                else:
+                                    snippet_price = potential_price
+                                    snippet_price_backup = snippet_price
+                                    print(f"💰 Found price in search snippet: {snippet_price}")
+                        else:
+                            snippet_price = potential_price
+                            snippet_price_backup = snippet_price
+                            print(f"💰 Found price in search snippet: {snippet_price}")
                     else:
-                        # Pattern 3: Just numbers that look like prices (XXX.XX format)
-                        price_match = re.search(r'\b(\d{1,3}(?:,\d{3})*\.\d{2})\b', snippet)
-                        if price_match and float(price_match.group(1).replace(',', '')) < 100000:  # Reasonable price range
+                        # Pattern 2: Price without $ (common in some formats)
+                        price_match = re.search(r'(?:price|cost|buy)[:\s]+([\d,]+\.?\d{2})', snippet, re.IGNORECASE)
+                        if price_match:
                             snippet_price_backup = f"${price_match.group(1)}"
-                            print(f"💰 Found potential price in snippet: {snippet_price_backup}")
+                            print(f"💰 Found price in snippet (without $): {snippet_price_backup}")
+                        else:
+                            # Pattern 3: Just numbers that look like prices (XXX.XX format)
+                            price_match = re.search(r'\b(\d{1,3}(?:,\d{3})*\.\d{2})\b', snippet)
+                            if price_match and float(price_match.group(1).replace(',', '')) < 100000:  # Reasonable price range
+                                snippet_price_backup = f"${price_match.group(1)}"
+                                print(f"💰 Found potential price in snippet: {snippet_price_backup}")
                 
                 # Check if snippet looks like a review/article (exclude these)
                 snippet_lower = snippet.lower()
@@ -118,19 +210,79 @@ async def parse_products_with_extract(results: List[Dict], user_query: str, agen
                 snippet_preview = snippet[:200]
                 print(f"📄 Snippet preview: {snippet_preview}")
             
+            # Check if this is a manufacturer site
+            is_manufacturer_site = any(manufacturer in url_lower for manufacturer in [
+                'samsung.com', 'dell.com', 'hp.com', 'lg.com', 'asus.com', 'acer.com',
+                'lenovo.com', 'msi.com', 'viewsonic.com', 'benq.com', 'philips.com',
+                'apple.com', 'microsoft.com', 'sony.com', 'panasonic.com'
+            ])
+            
+            # Check if this is a carrier page
+            is_carrier_page = any(carrier in url_lower for carrier in ['verizon.com', 'att.com', 't-mobile.com', 'tmobile.com', 'sprint.com', 'uscellular.com'])
+            
+            # For carrier pages and manufacturer sites, prefer full extraction for better price accuracy
+            # Only use snippet if we explicitly found "Full retail price" in the snippet (for carriers)
+            if is_carrier_page and snippet:
+                snippet_lower = snippet.lower()
+                has_full_retail_in_snippet = any(phrase in snippet_lower for phrase in [
+                    'full retail price', 'outright purchase', 'buy outright', 
+                    'one-time purchase', 'full price', 'retail price'
+                ])
+                if not has_full_retail_in_snippet:
+                    print(f"📱 Carrier page detected - doing full extraction to find full retail price")
+                    snippet_price = None  # Force full extraction even if we found a price
+                    snippet_price_backup = None
+            
+            # For manufacturer sites, always do full extraction (they often have prices on page but not in snippet)
+            if is_manufacturer_site:
+                print(f"🏭 Manufacturer site detected ({extract_domain(url)}) - doing full extraction to find price")
+                snippet_price = None  # Force full extraction for manufacturer sites
+                snippet_price_backup = None
+            
             # If snippet has price AND doesn't look like a review, use it directly
             if snippet_price and not any(indicator in snippet.lower()[:200] for indicator in ['review', 'our pick', 'best', 'comparison']):
-                print(f"✅ Using snippet price, skipping full extraction for speed")
+                if is_carrier_page:
+                    print(f"✅ Using snippet price (found full retail price), skipping full extraction for speed")
+                else:
+                    print(f"✅ Using snippet price, skipping full extraction for speed")
+                
+                # Check if it's a monthly price - be more careful
+                snippet_lower = snippet.lower()
+                url_lower = url.lower()
+                
+                # More specific monthly indicators
+                monthly_phrases = ['/month', 'per month', 'monthly subscription', 'monthly plan', ' mo.', ' mo ', 'billed monthly']
+                is_subscription = any(phrase in snippet_lower for phrase in ['subscription', 'monthly plan', 'billed monthly', 'recurring'])
+                
+                # For Apple products, be extra careful - they're usually one-time purchases
+                is_apple = 'apple.com' in url_lower
+                
+                # Only mark as monthly if it's clearly a subscription/service
+                is_monthly = (any(phrase in snippet_lower for phrase in monthly_phrases) and 
+                            (is_subscription or not is_apple))
+                
+                final_price = snippet_price
+                if is_monthly and '/month' not in snippet_price.lower():
+                    final_price = f"{snippet_price}/month"
+                elif is_apple and '/month' in snippet_price.lower():
+                    # Remove /month from Apple products
+                    final_price = snippet_price.replace('/month', '').replace('/Month', '').strip()
+                
                 cost_tracker["snippet_based_results"] += 1
                 cost_tracker["total_results"] += 1
+                products_found += 1
                 products.append({
                     "product_name": title,
                     "details": snippet[:150] if snippet else "",  # Use first part of snippet as details
-                    "price": snippet_price,
+                    "price": final_price,
                     "deal_info": "",
                     "url": url,
                     "source": extract_domain(url)
                 })
+                # Stop if we've found enough products
+                if products_found >= target_products:
+                    print(f"✅ Found {products_found} products, stopping extraction")
+                    break
                 continue
             
             print(f"Extracting full content from: {url}")
@@ -221,32 +373,15 @@ async def parse_products_with_extract(results: List[Dict], user_query: str, agen
                     full_content = api_response_str
                 
                 if not full_content or full_content == "" or full_content == "None":
-                    print(f"No content extracted for {url}, using title only")
-                    cost_tracker["total_results"] += 1
-                    products.append({
-                        "product_name": title,
-                        "details": "",
-                        "price": "Price not available",
-                        "deal_info": "",
-                        "url": url,
-                        "source": extract_domain(url)
-                    })
+                    print(f"🚫 Skipping {url[:60]}... (no content extracted, no price)")
                     continue
                 
             except Exception as e:
                 print(f"Error extracting content from {url}: {e}")
                 import traceback
                 traceback.print_exc()
-                # Fallback to basic info
-                cost_tracker["total_results"] += 1
-                products.append({
-                    "product_name": title,
-                    "details": "",
-                    "price": "Price not available",
-                    "deal_info": "",
-                    "url": url,
-                    "source": extract_domain(url)
-                })
+                # Skip if extraction fails (no price available)
+                print(f"🚫 Skipping {url[:60]}... (extraction failed, no price)")
                 continue
             
             # Truncate content to avoid token limits (but use more than snippets)
@@ -290,11 +425,31 @@ SPECIAL INSTRUCTIONS FOR AMAZON:
 - If you see any number that looks like a price (with or without $), include it
 """
             
+            # Special handling for carrier pages (Verizon, AT&T, T-Mobile, etc.)
+            carrier_instructions = ""
+            url_lower = url.lower()
+            is_carrier_page = any(carrier in url_lower for carrier in ['verizon.com', 'att.com', 't-mobile.com', 'tmobile.com', 'sprint.com', 'uscellular.com'])
+            if is_carrier_page:
+                carrier_instructions = """
+CRITICAL INSTRUCTIONS FOR CARRIER/MOBILE PROVIDER PAGES:
+- These pages show multiple pricing options: monthly payment plans, full retail price, and savings amounts
+- ALWAYS prioritize and extract the "Full retail price" or "Outright purchase" price
+- Look for phrases like: "Full retail price", "Buy outright", "Outright purchase", "One-time purchase", "Full price", "Retail price"
+- IGNORE these prices (do NOT use them):
+  * Monthly payment plan prices (e.g., "$0.00/mo for 36 mos", "$17.49/mo")
+  * Monthly savings amounts (e.g., "You're saving $17.50/mo", "Save $X/mo")
+  * Installment plan prices
+  * "Starts at" prices for payment plans
+- ONLY use the full retail/outright purchase price (e.g., "$629.99", "$999.99")
+- If you cannot find a full retail price, then use "Price not available"
+"""
+            
             prompt = f"""You are extracting product information from a webpage. The user is searching for: "{user_query}"
 
 Page Title: {title}
 URL: {url}
 {amazon_instructions}
+{carrier_instructions}
 Page Content:
 {content_excerpt}
 
@@ -305,18 +460,32 @@ IMPORTANT: Look carefully for prices in the content. Prices may appear as:
 - Percentage discounts like "20% off" or "Save 20%"
 - Price ranges like "$999-$1,299"
 - Numbers that look like prices: 999.99, 1,299.99 (even without $ symbol)
+- "Full retail price" or "Outright purchase" price (PRIORITIZE THIS for carrier pages)
 
 Extract and return ONLY a valid JSON object with these exact fields:
 {{
   "product_name": "Specific product name with model (e.g., 'MacBook Air M2 13-inch')",
   "details": "Model, color, storage, configuration (e.g., '256GB, Space Gray, 8GB RAM')",
-  "price": "Current price with currency symbol (e.g., '$999' or 'From $999' or '$999-$1,299'). If no price found, use 'Price not available'",
-  "deal_info": "Discount, savings, or promotion (e.g., 'Save $200' or '20% off' or 'Black Friday Deal'). Leave empty if none.",
+  "price": "Current FULL RETAIL/OUTRIGHT PURCHASE price with currency symbol (e.g., '$999' or 'From $999' or '$999-$1,299'). For carrier pages, use the full retail price, NOT monthly payment plans. If it's a monthly subscription service (not a payment plan), add '/month' (e.g., '$9.99/month'). If no price found, use 'Price not available'",
+  "deal_info": "Discount, savings, or promotion (e.g., 'Save $200' or '20% off' or 'Black Friday Deal'). For carrier pages, you can mention monthly savings here if available. Leave empty if none.",
   "in_stock": true
 }}
 
+PRICE PRIORITY (in order of preference):
+1. "Full retail price" or "Outright purchase" price (ALWAYS use this if available)
+2. Regular product price (one-time purchase)
+3. Monthly subscription price (only for services, not payment plans)
+4. "Price not available" (only if no price found)
+
+IMPORTANT FOR MONTHLY PRICES:
+- ONLY add '/month' for actual subscription services (e.g., software subscriptions, streaming services)
+- DO NOT add '/month' for installment/payment plans (these are one-time purchases paid over time)
+- Examples of monthly subscriptions: '$9.99/month' for software, '$29.99/month' for streaming
+- Examples of payment plans (do NOT use): "$17.49/mo for 36 mos" (use full retail price instead)
+
 CRITICAL: 
 - Search the content thoroughly for any price information, especially in the first 1000 characters
+- For carrier pages, look specifically for "Full retail price" or "Outright purchase" sections
 - Look for ANY number that could be a price (with or without $, with or without decimals)
 - For e-commerce sites like Amazon, prices are almost always present - search very carefully
 - If you see any dollar amount, percentage, or number that looks like a price, include it in the "price" field
@@ -422,6 +591,49 @@ CRITICAL:
                         product_data["price"] = price_value
                         print(f"✅ Price validated: '{price_value}'")
                 
+                # Check if price is monthly and add /month suffix if needed
+                final_price = product_data.get("price", "")
+                if final_price and final_price.lower() != "price not available":
+                    # Check content for monthly indicators - be more strict
+                    content_lower = content_excerpt.lower()
+                    snippet_lower = snippet.lower() if snippet else ""
+                    
+                    # More specific monthly indicators (avoid false positives)
+                    monthly_phrases = [
+                        '/month', 'per month', 'monthly subscription', 'monthly plan',
+                        ' mo.', ' mo ', 'mo.', 'mo ', 'monthly fee', 'monthly cost',
+                        'billed monthly', 'monthly payment', 'monthly rate'
+                    ]
+                    
+                    # Check if it's actually a subscription/service (not a one-time purchase)
+                    is_subscription = any(phrase in content_lower or phrase in snippet_lower 
+                                        for phrase in ['subscription', 'monthly plan', 'billed monthly', 'recurring'])
+                    
+                    # For Apple products, be extra careful - they're usually one-time purchases
+                    is_apple = 'apple.com' in url.lower()
+                    
+                    # Only mark as monthly if:
+                    # 1. Explicit monthly indicators found AND
+                    # 2. Either it's a subscription OR it's not from Apple (Apple products are usually one-time)
+                    is_monthly = (any(phrase in content_lower or phrase in snippet_lower 
+                                     for phrase in monthly_phrases) and 
+                                 (is_subscription or not is_apple))
+                    
+                    if is_monthly and '/month' not in final_price.lower() and 'month' not in final_price.lower():
+                        final_price = f"{final_price}/month"
+                        product_data["price"] = final_price
+                        print(f"📅 Detected monthly price, updated to: {final_price}")
+                    elif is_apple and '/month' in final_price.lower():
+                        # Remove /month from Apple products (they're one-time purchases)
+                        final_price = final_price.replace('/month', '').replace('/Month', '').strip()
+                        product_data["price"] = final_price
+                        print(f"🍎 Removed /month from Apple product price: {final_price}")
+                
+                # Skip products without valid prices
+                if not final_price or final_price.lower() in ["price not available", "none", ""]:
+                    print(f"🚫 Skipping {title[:50]}... (no price available)")
+                    continue
+                
                 if "product_name" not in product_data or not product_data.get("product_name"):
                     product_data["product_name"] = title
                 
@@ -431,6 +643,7 @@ CRITICAL:
                 
                 cost_tracker["total_results"] += 1
                 products.append(product_data)
+                products_found += 1
                 print(f"✅ Extracted: {product_data.get('product_name')} - Price: '{product_data.get('price')}' (type: {type(product_data.get('price'))})")
                 
             except json.JSONDecodeError as e:
@@ -438,9 +651,36 @@ CRITICAL:
                 print(f"LLM output: {llm_output[:200]}")
                 # Fallback: try to extract price manually from content
                 price_match = re.search(r'\$[\d,]+(?:\.\d{2})?', content_excerpt)
-                price = price_match.group(0) if price_match else "Price not available"
+                price = price_match.group(0) if price_match else None
+                
+                # Skip if no price found
+                if not price:
+                    print(f"🚫 Skipping {title[:50]}... (no price found in fallback)")
+                    continue
+                
+                # Check for monthly price - be more careful
+                content_lower = content_excerpt.lower()
+                url_lower = url.lower()
+                
+                # More specific monthly indicators
+                monthly_phrases = ['/month', 'per month', 'monthly subscription', 'monthly plan', ' mo.', ' mo ', 'billed monthly']
+                is_subscription = any(phrase in content_lower for phrase in ['subscription', 'monthly plan', 'billed monthly', 'recurring'])
+                
+                # For Apple products, be extra careful
+                is_apple = 'apple.com' in url_lower
+                
+                # Only mark as monthly if it's clearly a subscription
+                is_monthly = (any(phrase in content_lower for phrase in monthly_phrases) and 
+                            (is_subscription or not is_apple))
+                
+                if is_monthly and '/month' not in price.lower():
+                    price = f"{price}/month"
+                elif is_apple and '/month' in price.lower():
+                    # Remove /month from Apple products
+                    price = price.replace('/month', '').replace('/Month', '').strip()
                 
                 cost_tracker["total_results"] += 1
+                products_found += 1
                 products.append({
                     "product_name": title,
                     "details": "",
@@ -449,33 +689,33 @@ CRITICAL:
                     "url": url,
                     "source": extract_domain(url)
                 })
+                # Stop if we've found enough products
+                if products_found >= target_products:
+                    print(f"✅ Found {products_found} products, stopping extraction")
+                    break
             except Exception as e:
                 print(f"Error in LLM extraction: {e}")
                 import traceback
                 traceback.print_exc()
-                # Fallback to basic info
-                cost_tracker["total_results"] += 1
-                products.append({
-                    "product_name": title,
-                    "details": "",
-                    "price": "Price not available",
-                    "deal_info": "",
-                    "url": url,
-                    "source": extract_domain(url)
-                })
+                # Skip products without prices
+                print(f"🚫 Skipping {title[:50]}... (extraction error, no price)")
+                continue
             
         except Exception as e:
             print(f"Error parsing result {idx}: {e}")
-            # Fallback to basic info
-            cost_tracker["total_results"] += 1
-            products.append({
-                "product_name": result.get("title", "Product"),
-                "details": "",
-                "price": "Price not available",
-                "deal_info": "",
-                "url": result.get("url", "#"),
-                "source": extract_domain(result.get("url", ""))
-            })
+            # Skip products that can't be parsed (no price available)
+            print(f"🚫 Skipping result {idx}... (parsing error, no price)")
+            continue
     
-    return products
+    # Final filter: Remove any products without valid prices
+    products_with_prices = []
+    for product in products:
+        price = product.get("price", "")
+        if price and price.lower() not in ["price not available", "none", ""]:
+            products_with_prices.append(product)
+        else:
+            print(f"🚫 Filtering out product without price: {product.get('product_name', 'Unknown')}")
+    
+    print(f"📊 Final count: {len(products)} products extracted, {len(products_with_prices)} with valid prices")
+    return products_with_prices
 

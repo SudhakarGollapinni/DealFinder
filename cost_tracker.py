@@ -8,7 +8,9 @@ from typing import Dict
 def create_cost_tracker() -> Dict:
     """Initialize a new cost tracker dictionary."""
     return {
-        "tavily_search": 0.01,  # ~$0.01 per search
+        "tavily_search": 0.0,  # Tavily search cost (~$0.01 per advanced search)
+        "serpapi_search": 0.0,  # Keep for backward compatibility
+        "serper_search": 0.0,  # Keep for backward compatibility
         "tavily_extract_calls": 0,
         "tavily_extract_cost": 0.0,  # ~$0.02 per URL (advanced depth)
         "llm_filtering_calls": 0,
@@ -24,7 +26,9 @@ def create_cost_tracker() -> Dict:
 def log_cost_summary(cost_tracker: Dict) -> None:
     """Print a formatted cost summary to the console."""
     total_cost = (
-        cost_tracker["tavily_search"] +
+        cost_tracker.get("tavily_search", 0.0) +
+        cost_tracker.get("serpapi_search", 0.0) +  # Keep for backward compatibility
+        cost_tracker.get("serper_search", 0.0) +  # Keep for backward compatibility
         cost_tracker["tavily_extract_cost"] +
         cost_tracker["llm_filtering_cost"] +
         cost_tracker["llm_extraction_cost"]
@@ -33,15 +37,20 @@ def log_cost_summary(cost_tracker: Dict) -> None:
     print("\n" + "="*60)
     print("💰 COST SUMMARY")
     print("="*60)
-    print(f"Tavily Search:        ${cost_tracker['tavily_search']:.4f}")
-    print(f"Tavily Extract:        ${cost_tracker['tavily_extract_cost']:.4f} ({cost_tracker['tavily_extract_calls']} calls × $0.02)")
-    print(f"LLM Filtering:         ${cost_tracker['llm_filtering_cost']:.4f} ({cost_tracker['llm_filtering_calls']} calls)")
-    print(f"LLM Extraction:        ${cost_tracker['llm_extraction_cost']:.4f} ({cost_tracker['llm_extraction_calls']} calls)")
+    if cost_tracker.get("tavily_search", 0.0) > 0:
+        print(f"Tavily Search:            ${cost_tracker['tavily_search']:.4f}")
+    if cost_tracker.get("serpapi_search", 0.0) > 0:
+        print(f"SerpAPI Search:           ${cost_tracker['serpapi_search']:.4f}")
+    if cost_tracker.get("serper_search", 0.0) > 0:
+        print(f"Serper Search:            ${cost_tracker['serper_search']:.4f}")
+    print(f"Tavily Extract:            ${cost_tracker['tavily_extract_cost']:.4f} ({cost_tracker['tavily_extract_calls']} calls × $0.02)")
+    print(f"LLM Filtering:            ${cost_tracker['llm_filtering_cost']:.4f} ({cost_tracker['llm_filtering_calls']} calls)")
+    print(f"LLM Extraction:           ${cost_tracker['llm_extraction_cost']:.4f} ({cost_tracker['llm_extraction_calls']} calls)")
     print(f"{'─'*60}")
-    print(f"TOTAL COST:            ${total_cost:.4f}")
+    print(f"TOTAL COST:               ${total_cost:.4f}")
     print(f"\nResults Breakdown:")
-    print(f"  • Snippet-based:     {cost_tracker['snippet_based_results']} (no extraction cost)")
-    print(f"  • Full extraction:   {cost_tracker['full_extraction_results']} (${cost_tracker['tavily_extract_cost']:.4f})")
-    print(f"  • Total products:    {cost_tracker['total_results']}")
+    print(f"  • Snippet-based:        {cost_tracker['snippet_based_results']} (no extraction cost)")
+    print(f"  • Full extraction:      {cost_tracker['full_extraction_results']} (${cost_tracker['tavily_extract_cost']:.4f})")
+    print(f"  • Total products:       {cost_tracker['total_results']}")
     print("="*60 + "\n")
 

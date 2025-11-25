@@ -44,9 +44,11 @@ CRITICAL: Only include pages where users can actually BUY the product with a pri
 
 INCLUDE (actual product purchase pages):
 - Product pages on e-commerce sites (Amazon, Best Buy, Target, Walmart, Newegg, etc.) with prices and "Add to Cart" or "Buy Now"
-- Product pages on brand stores (Apple.com, Samsung.com, Dell.com, etc.) with prices and purchase options
+- Product pages on brand stores (Apple.com, Samsung.com, Dell.com, HP.com, LG.com, ASUS.com, Acer.com, etc.) with prices and purchase options - ALWAYS INCLUDE manufacturer sites even if snippet doesn't show price
+- Carrier/mobile provider pages (Verizon, AT&T, T-Mobile, Sprint, etc.) with product prices and purchase options - these ARE valid product pages
 - Online retailers with product listings that show prices and allow immediate purchase
 - Pages that clearly have: product price + purchase button + product specifications
+- Manufacturer product pages (samsung.com, dell.com, hp.com, lg.com, asus.com, acer.com, etc.) - include these even if the snippet doesn't explicitly show a price, as prices are usually on the page
 
 STRICTLY EXCLUDE (NOT product purchase pages):
 - Review websites (Wirecutter, CNET reviews, TechRadar reviews, etc.) - even if they mention prices
@@ -55,13 +57,16 @@ STRICTLY EXCLUDE (NOT product purchase pages):
 - Product specification sheets or technical documentation
 - News articles about products
 - Blog posts or articles
-- Forums (Reddit, discussion boards)
-- Social media (Twitter, Facebook, Instagram)
-- YouTube videos
+- Forums (Reddit, discussion boards, any forum)
+- Social media (Twitter, Facebook, Instagram, Pinterest, TikTok, etc.)
+- YouTube videos (youtube.com, youtu.be)
 - Q&A sites (Quora, Stack Overflow)
 - Wikipedia or informational pages
 - Product announcement pages without purchase options
 - Press releases or marketing pages without buy buttons
+- Video sharing sites
+- Discussion forums
+- Any page that doesn't have a clear price and purchase option
 
 Here are the search results to filter:
 {results_text}
@@ -70,6 +75,8 @@ IMPORTANT:
 - If a page is a review, comparison, or article (even if it mentions prices), EXCLUDE it
 - If a page is a PDF or document, EXCLUDE it
 - Only include pages where you can actually purchase the product right now
+- BE LENIENT with manufacturer sites (samsung.com, dell.com, hp.com, etc.) - include them even if the snippet doesn't show a price, as they typically have product pages with prices
+- Prioritize diversity: try to include results from different retailers and manufacturers, not just one site
 
 Return ONLY a JSON array with the indices (1-based) of results that are actual product purchase pages.
 Example: [1, 3] means keep results 1 and 3.
