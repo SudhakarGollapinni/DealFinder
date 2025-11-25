@@ -3,6 +3,15 @@ DealFinder - FastAPI application for finding product deals.
 Main entry point with routes and request handling.
 """
 import os
+import sys
+from pathlib import Path
+
+# Ensure the project root is in Python path
+# This allows running from any directory
+project_root = Path(__file__).parent.absolute()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, EmailStr

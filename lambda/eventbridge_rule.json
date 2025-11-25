@@ -1,0 +1,13 @@
+{
+  "Name": "check-product-prices",
+  "Description": "Triggers price check for tracked products every 6 hours",
+  "ScheduleExpression": "rate(6 hours)",
+  "State": "ENABLED",
+  "Targets": [
+    {
+      "Arn": "arn:aws:lambda:REGION:ACCOUNT_ID:function:check-product-prices",
+      "Id": "1"
+    }
+  ]
+}
+
